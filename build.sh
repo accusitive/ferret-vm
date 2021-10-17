@@ -1,7 +1,7 @@
 echo "Building java"        &&
 javac Main.java  &&
 echo "Building STD"&&
-clang -S -emit-llvm std.c&&
+clang -S -O3 -emit-llvm std.c &&
 echo "building Rust"&&
 cargo run&&
 echo "Building binary"&&

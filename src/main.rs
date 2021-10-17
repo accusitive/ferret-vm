@@ -7,6 +7,7 @@ use cafebabe::{
 use inkwell::{
     basic_block::BasicBlock,
     context::Context,
+    debug_info::DebugInfoBuilder,
     memory_buffer::MemoryBuffer,
     module::{Linkage, Module},
     passes::{PassManager, PassManagerBuilder, PassRegistry},
@@ -20,6 +21,7 @@ fn main() {
     let ctx = Context::create();
     let builder = ctx.create_builder();
     let class_module = ctx.create_module("class");
+ 
     let fpm = PassManager::create(&class_module);
     let pass_builder = PassManagerBuilder::create();
 
@@ -29,8 +31,6 @@ fn main() {
     pass_builder.set_disable_unit_at_a_time(false);
     pass_builder.set_disable_unroll_loops(false);
     pass_builder.set_disable_simplify_lib_calls(false);
-    
-    pass_builder.populate_function_pass_manager(&fpm);
 
     let pass_registry = PassRegistry::get_global();
     pass_registry.initialize_core();
@@ -46,6 +46,7 @@ fn main() {
     pass_registry.initialize_codegen();
     pass_registry.initialize_target();
     pass_registry.initialize_aggressive_inst_combiner();
+    pass_builder.populate_function_pass_manager(&fpm);
 
     // fpm.add
     fpm.initialize();
@@ -55,6 +56,7 @@ fn main() {
     let class = cafebabe::parse_class(&bytes).unwrap();
 
     println!("{:#?}", class);
+
     let int32 = ctx.i32_type();
     let void = ctx.void_type();
     // region: STD
