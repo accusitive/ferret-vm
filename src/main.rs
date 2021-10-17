@@ -1,27 +1,29 @@
 use std::{collections::HashMap, path::Path};
 
-use cafebabe::{
-    attributes::AttributeData,
-    bytecode::{ByteCode, Opcode},
-};
+use cafebabe::{attributes::AttributeData, bytecode::Opcode};
 use inkwell::{
     basic_block::BasicBlock,
     context::Context,
-    debug_info::DebugInfoBuilder,
-    memory_buffer::MemoryBuffer,
-    module::{Linkage, Module},
+    module::Linkage,
     passes::{PassManager, PassManagerBuilder, PassRegistry},
-    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple},
-    values::{BasicValueEnum, GenericValue, IntValue},
+    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
+    values::BasicValueEnum,
     IntPredicate, OptimizationLevel,
 };
 mod util;
 
 fn main() {
+    let _exit = std::process::Command::new("/usr/bin/javac")
+        .arg("Main.java")
+        .spawn()
+        .unwrap()
+        .wait()
+        .unwrap();
+
     let ctx = Context::create();
     let builder = ctx.create_builder();
     let class_module = ctx.create_module("class");
- 
+
     let fpm = PassManager::create(&class_module);
     let pass_builder = PassManagerBuilder::create();
 
@@ -55,19 +57,22 @@ fn main() {
     let bytes = std::fs::read("./Main.class").unwrap();
     let class = cafebabe::parse_class(&bytes).unwrap();
 
-    println!("{:#?}", class);
+    // println!("{:#?}", class);
+    // ctx.type
+    let int = ctx.i32_type();
+    let float = ctx.f32_type();
 
-    let int32 = ctx.i32_type();
     let void = ctx.void_type();
     // region: STD
+    // init
     let stack_ty = {
-        let arr = int32.array_type(1024);
-        ctx.struct_type(&[arr.into(), int32.into()], false)
+        let arr = int.array_type(1024);
+        ctx.struct_type(&[arr.into(), int.into()], false)
             .ptr_type(inkwell::AddressSpace::Generic)
     };
 
-    let varstore_ty = {
-        let arr = int32.array_type(1024);
+    let _varstore_ty = {
+        let arr = int.array_type(1024);
         ctx.struct_type(&[arr.into()], false)
     };
     let std_stack_new = class_module.add_function(
@@ -75,23 +80,35 @@ fn main() {
         stack_ty.fn_type(&[], false),
         Some(Linkage::External),
     );
-    let std_stack_push = class_module.add_function(
-        "stack_push",
-        void.fn_type(&[stack_ty.into(), int32.into()], false),
+    // int
+    let std_stack_pushi = class_module.add_function(
+        "stack_pushi",
+        void.fn_type(&[stack_ty.into(), int.into()], false),
         Some(Linkage::External),
     );
-    let std_stack_pop = class_module.add_function(
-        "stack_pop",
-        int32.fn_type(&[stack_ty.into()], false),
+    let std_stack_popi = class_module.add_function(
+        "stack_popi",
+        int.fn_type(&[stack_ty.into()], false),
+        Some(Linkage::External),
+    );
+    // float
+    let std_stack_pushf = class_module.add_function(
+        "stack_pushf",
+        void.fn_type(&[stack_ty.into(), float.into()], false),
+        Some(Linkage::External),
+    );
+    let std_stack_popf = class_module.add_function(
+        "stack_popf",
+        float.fn_type(&[stack_ty.into()], false),
         Some(Linkage::External),
     );
     // endregion: STD
     for method in &class.methods {
-        println!("Method: {} {}", method.name, method.descriptor);
+        // println!("Method: {} {}", method.name, method.descriptor);
         let function_type = util::parse_method_type(&ctx, &method.descriptor);
         let function = match class_module.get_function(&method.name) {
             Some(f) => f,
-            None => class_module.add_function(&method.name, function_type.1, None),
+            None => class_module.add_function(&method.name, function_type.fnty, None),
         };
 
         let code = method.attributes.iter().find(|a| {
@@ -118,10 +135,18 @@ fn main() {
                     .unwrap_left()
                     .into_pointer_value(),
             );
-            let push = |t| builder.build_call(std_stack_push, &[stack, t], "stack_push");
-            let pop = || {
+            // TODO: one function and have it automatically determine what std functioon it should call
+            let pushi = |t| builder.build_call(std_stack_pushi, &[stack, t], "stack_pushi");
+            let popi = || {
                 builder
-                    .build_call(std_stack_pop, &[stack], "stack_pop")
+                    .build_call(std_stack_popi, &[stack], "stack_popi")
+                    .try_as_basic_value()
+                    .unwrap_left()
+            };
+            let pushf = |t| builder.build_call(std_stack_pushf, &[stack, t], "stack_pushf");
+            let popf = || {
+                builder
+                    .build_call(std_stack_popf, &[stack], "stack_popf")
                     .try_as_basic_value()
                     .unwrap_left()
             };
@@ -131,11 +156,18 @@ fn main() {
             let i = c.bytecode.as_ref().unwrap().opcodes.iter().peekable();
             let mut should_branch_previous_to_current = true;
             let locals = (0..=3)
-                .map(|i| builder.build_alloca(ctx.i32_type(), &format!("local{}", i)))
+                .map(|i| {
+                    builder.build_alloca(
+                        int,
+                        &format!("local{}", i),
+                    )
+                })
                 .collect::<Vec<_>>();
             for p in 1..function.count_params() + 1 {
                 let ptr = locals.get(p as usize).unwrap();
-                builder.build_store(*ptr, function.get_nth_param(p - 1).unwrap());
+                let value = function.get_nth_param(p - 1).unwrap();
+                let value_as_int = builder.build_bitcast(value, int, "bitcast_to_int");
+                builder.build_store(*ptr, value_as_int);
             }
             for (o, u) in i.clone() {
                 let bb = ctx.append_basic_block(function, &format!("Ox{:x}-{:?}", o, u));
@@ -164,8 +196,8 @@ fn main() {
                     let longbb = block_map.get(&long_branch).unwrap();
                     let shortbb = block_map.get(&(offset + 3)).unwrap();
 
-                    let rhs = pop().into_int_value();
-                    let lhs = pop().into_int_value();
+                    let rhs = popi().into_int_value();
+                    let lhs = popi().into_int_value();
 
                     let cmp = builder.build_int_compare(predicate, lhs, rhs, "intcompare");
 
@@ -175,22 +207,29 @@ fn main() {
                 match opcode {
                     Opcode::Iload(n) => {
                         println!("Locals {:#?}", locals);
-                        let l = builder.build_load(*locals.get(*n as usize).unwrap(), "aload");
-                        push(l);
+                        let l = builder.build_load(*locals.get(*n as usize).unwrap(), "iload");
+                        pushi(l);
+                    }
+                    Opcode::Fload(n) => {
+                        let l = builder.build_load(*locals.get(*n as usize).unwrap(), "fload");
+                        pushi(l);
                     }
                     Opcode::Aload(n) => {
-                        let l = builder.build_load(*locals.get(*n as usize).unwrap(), "iload");
-                        push(l);
+                        let l = builder.build_load(*locals.get(*n as usize).unwrap(), "aload");
+                        pushi(l);
                     }
                     Opcode::Invokespecial(_) => {}
                     Opcode::Return => {
                         builder.build_return(None);
                     }
                     Opcode::Ireturn => {
-                        let v = pop();
+                        let v = popi();
                         builder.build_return(Some(&v));
                     }
-
+                    Opcode::Freturn => {
+                        let v = popf();
+                        builder.build_return(Some(&v));
+                    }
                     Opcode::IfIcmpne(n) => impl_branching(IntPredicate::NE, offset, n),
                     Opcode::IfIcmpeq(n) => impl_branching(IntPredicate::EQ, offset, n),
                     Opcode::IfIcmpge(n) => impl_branching(IntPredicate::SGE, offset, n),
@@ -199,38 +238,38 @@ fn main() {
                     Opcode::IfIcmplt(n) => impl_branching(IntPredicate::SLT, offset, n),
                     // region: consts
                     Opcode::Iconst1 => {
-                        push(BasicValueEnum::IntValue(
+                        pushi(BasicValueEnum::IntValue(
                             ctx.i32_type().const_int(1u64, false),
                         ));
                     }
                     Opcode::Iconst2 => {
-                        push(BasicValueEnum::IntValue(
+                        pushi(BasicValueEnum::IntValue(
                             ctx.i32_type().const_int(2u64, false),
                         ));
                     }
                     Opcode::Iconst3 => {
-                        push(BasicValueEnum::IntValue(
+                        pushi(BasicValueEnum::IntValue(
                             ctx.i32_type().const_int(3u64, false),
                         ));
                     }
                     Opcode::Iconst4 => {
-                        push(BasicValueEnum::IntValue(
+                        pushi(BasicValueEnum::IntValue(
                             ctx.i32_type().const_int(4u64, false),
                         ));
                     }
                     Opcode::Iconst5 => {
-                        push(BasicValueEnum::IntValue(
+                        pushi(BasicValueEnum::IntValue(
                             ctx.i32_type().const_int(5u64, false),
                         ));
                     }
                     // endregion: consts
                     Opcode::Sipush(n) => {
-                        push(BasicValueEnum::IntValue(
+                        pushi(BasicValueEnum::IntValue(
                             ctx.i32_type().const_int(*n as u64, false),
                         ));
                     }
                     Opcode::Bipush(n) => {
-                        push(BasicValueEnum::IntValue(
+                        pushi(BasicValueEnum::IntValue(
                             ctx.i32_type().const_int(*n as u64, false),
                         ));
                     }
@@ -239,37 +278,44 @@ fn main() {
                         let f = match class_module.get_function(&member.name_and_type.name) {
                             Some(m) => m,
                             None => {
-                                class_module.add_function(&member.name_and_type.name, a.1, None)
+                                class_module.add_function(&member.name_and_type.name, a.fnty, None)
                             }
                         };
-                        println!("Member {:?} wants {} args", member, a.0);
-                        let popped = (0..a.0).map(|i| pop()).collect::<Vec<_>>();
-                        let _object_ref = pop();
+                        println!("Member {:?} wants {} args", member, a.parameters.len());
+                        let popped = (0..a.parameters.len()).map(|_| popi()).collect::<Vec<_>>();
+                        let _object_ref = popi();
 
                         let result = builder.build_call(f, &popped, "call");
-                        push(result.try_as_basic_value().unwrap_left());
+                        pushi(result.try_as_basic_value().unwrap_left());
                     }
                     Opcode::Imul => {
-                        let lhs = pop().into_int_value();
-                        let rhs = pop().into_int_value();
+                        let lhs = popi().into_int_value();
+                        let rhs = popi().into_int_value();
                         let product = builder.build_int_mul(lhs, rhs, "imul");
-                        push(inkwell::values::BasicValueEnum::IntValue(product));
+                        pushi(inkwell::values::BasicValueEnum::IntValue(product));
                     }
                     Opcode::Iadd => {
-                        let lhs = pop().into_int_value();
-                        let rhs = pop().into_int_value();
+                        let lhs = popi().into_int_value();
+                        let rhs = popi().into_int_value();
                         let sum = builder.build_int_add(lhs, rhs, "iadd");
-                        push(inkwell::values::BasicValueEnum::IntValue(sum));
+                        pushi(inkwell::values::BasicValueEnum::IntValue(sum));
+                    }
+                    Opcode::Fadd => {
+                        let lhs = popf().into_float_value();
+                        let rhs = popf().into_float_value();
+                        let sum = builder.build_float_add(lhs, rhs, "fadd");
+                        pushf(inkwell::values::BasicValueEnum::FloatValue(sum));
                     }
                     Opcode::Isub => {
-                        let rhs = pop().into_int_value();
-                        let lhs = pop().into_int_value();
+                        let rhs = popi().into_int_value();
+                        let lhs = popi().into_int_value();
                         let sum = builder.build_int_sub(lhs, rhs, "isub");
-                        push(inkwell::values::BasicValueEnum::IntValue(sum));
+                        pushi(inkwell::values::BasicValueEnum::IntValue(sum));
                     }
                     Opcode::Pop => {
-                        pop();
+                        popi();
                     }
+
                     _ => panic!("0x{:?} is not implemented yet!", opcode),
                 }
                 // Normal code (???)

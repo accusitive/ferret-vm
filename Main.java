@@ -15,7 +15,9 @@ public class Main {
 
         }
     }
-
+    public float addf(float left, float right) {
+        return left + right;
+    }
     public int testMethods(int i, int j) {
         return testMethods2(i, j);
         // return i;
@@ -43,10 +45,6 @@ public class Main {
     public int minusOne(int n) {
         return n-1;
     }
-    // public int fib(int n) {
-    // if(n < 5) {
-    // return n;
-    // }
-    // return 10000;
-    // }
+    
+    
 }
