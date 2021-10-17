@@ -9,10 +9,10 @@ use inkwell::{
     context::Context,
     memory_buffer::MemoryBuffer,
     module::{Linkage, Module},
-    passes::PassManager,
+    passes::{PassManager, PassManagerBuilder, PassRegistry},
     targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple},
     values::{BasicValueEnum, GenericValue, IntValue},
-    OptimizationLevel,
+    IntPredicate, OptimizationLevel,
 };
 mod util;
 
@@ -21,17 +21,35 @@ fn main() {
     let builder = ctx.create_builder();
     let class_module = ctx.create_module("class");
     let fpm = PassManager::create(&class_module);
+    let pass_builder = PassManagerBuilder::create();
 
-    fpm.add_instruction_combining_pass();
-    fpm.add_reassociate_pass();
-    fpm.add_gvn_pass();
-    fpm.add_cfg_simplification_pass();
-    fpm.add_basic_alias_analysis_pass();
-    fpm.add_promote_memory_to_register_pass();
-    fpm.add_instruction_combining_pass();
-    fpm.add_reassociate_pass();
+    pass_builder.set_optimization_level(OptimizationLevel::Aggressive);
+    pass_builder.set_size_level(0);
+    pass_builder.set_inliner_with_threshold(1);
+    pass_builder.set_disable_unit_at_a_time(false);
+    pass_builder.set_disable_unroll_loops(false);
+    pass_builder.set_disable_simplify_lib_calls(false);
+    
+    pass_builder.populate_function_pass_manager(&fpm);
+
+    let pass_registry = PassRegistry::get_global();
+    pass_registry.initialize_core();
+    pass_registry.initialize_transform_utils();
+    pass_registry.initialize_scalar_opts();
+    pass_registry.initialize_obj_carc_opts();
+    pass_registry.initialize_vectorization();
+    pass_registry.initialize_inst_combine();
+    pass_registry.initialize_ipo();
+    pass_registry.initialize_instrumentation();
+    pass_registry.initialize_analysis();
+    pass_registry.initialize_ipa();
+    pass_registry.initialize_codegen();
+    pass_registry.initialize_target();
+    pass_registry.initialize_aggressive_inst_combiner();
+
     // fpm.add
     fpm.initialize();
+
     // class_module.link_in_module(make_std_module(&ctx)).unwrap();
     let bytes = std::fs::read("./Main.class").unwrap();
     let class = cafebabe::parse_class(&bytes).unwrap();
@@ -39,7 +57,7 @@ fn main() {
     println!("{:#?}", class);
     let int32 = ctx.i32_type();
     let void = ctx.void_type();
-
+    // region: STD
     let stack_ty = {
         let arr = int32.array_type(1024);
         ctx.struct_type(&[arr.into(), int32.into()], false)
@@ -65,7 +83,7 @@ fn main() {
         int32.fn_type(&[stack_ty.into()], false),
         Some(Linkage::External),
     );
-
+    // endregion: STD
     for method in &class.methods {
         println!("Method: {} {}", method.name, method.descriptor);
         let function_type = util::parse_method_type(&ctx, &method.descriptor);
@@ -114,7 +132,6 @@ fn main() {
                 .map(|i| builder.build_alloca(ctx.i32_type(), &format!("local{}", i)))
                 .collect::<Vec<_>>();
             for p in 1..function.count_params() + 1 {
-                // TODO: Make this automatic and use function param count
                 let ptr = locals.get(p as usize).unwrap();
                 builder.build_store(*ptr, function.get_nth_param(p - 1).unwrap());
             }
@@ -140,7 +157,6 @@ fn main() {
                     Opcode::Ireturn => false,
                     _ => true,
                 };
-                // builder.build_unconditional_branch(bb);
                 let impl_branching = |predicate, offset, joff: &_| {
                     let long_branch = offset + (*joff as usize);
                     let longbb = block_map.get(&long_branch).unwrap();
@@ -156,7 +172,6 @@ fn main() {
                 builder.position_at_end(bb);
                 match opcode {
                     Opcode::Iload(n) => {
-                        // let table: [u64; 3] = [0, 1, 5];
                         println!("Locals {:#?}", locals);
                         let l = builder.build_load(*locals.get(*n as usize).unwrap(), "aload");
                         push(l);
@@ -174,31 +189,12 @@ fn main() {
                         builder.build_return(Some(&v));
                     }
 
-                    Opcode::IfIcmpne(joff) => {
-                        let long_branch = offset + (*joff as usize);
-                        let longbb = block_map.get(&long_branch).unwrap();
-                        let shortbb = block_map.get(&(offset + 3)).unwrap();
-
-                        let lhs = pop().into_int_value();
-                        let rhs = pop().into_int_value();
-
-                        let cmp = builder.build_int_compare(
-                            inkwell::IntPredicate::NE,
-                            lhs,
-                            rhs,
-                            "intcompare",
-                        );
-
-                        builder.build_conditional_branch(cmp, *longbb, *shortbb);
-                    }
-
-                    Opcode::IfIcmpeq(n) => {
-                        impl_branching(inkwell::IntPredicate::EQ, offset, n);
-                    }
-                    Opcode::IfIcmpge(n) => impl_branching(inkwell::IntPredicate::SGE, offset, n),
-                    Opcode::IfIcmpgt(n) => impl_branching(inkwell::IntPredicate::SGT, offset, n),
-                    Opcode::IfIcmple(n) => impl_branching(inkwell::IntPredicate::SLE, offset, n),
-                    Opcode::IfIcmplt(n) => impl_branching(inkwell::IntPredicate::SLT, offset, n),
+                    Opcode::IfIcmpne(n) => impl_branching(IntPredicate::NE, offset, n),
+                    Opcode::IfIcmpeq(n) => impl_branching(IntPredicate::EQ, offset, n),
+                    Opcode::IfIcmpge(n) => impl_branching(IntPredicate::SGE, offset, n),
+                    Opcode::IfIcmpgt(n) => impl_branching(IntPredicate::SGT, offset, n),
+                    Opcode::IfIcmple(n) => impl_branching(IntPredicate::SLE, offset, n),
+                    Opcode::IfIcmplt(n) => impl_branching(IntPredicate::SLT, offset, n),
                     // region: consts
                     Opcode::Iconst1 => {
                         push(BasicValueEnum::IntValue(
@@ -244,9 +240,9 @@ fn main() {
                                 class_module.add_function(&member.name_and_type.name, a.1, None)
                             }
                         };
-                        println!("Member {:?} wants {} rgs", member, a.0);
+                        println!("Member {:?} wants {} args", member, a.0);
                         let popped = (0..a.0).map(|i| pop()).collect::<Vec<_>>();
-                        let object_ref = pop();
+                        let _object_ref = pop();
 
                         let result = builder.build_call(f, &popped, "call");
                         push(result.try_as_basic_value().unwrap_left());
@@ -264,8 +260,8 @@ fn main() {
                         push(inkwell::values::BasicValueEnum::IntValue(sum));
                     }
                     Opcode::Isub => {
-                        let lhs = pop().into_int_value();
                         let rhs = pop().into_int_value();
+                        let lhs = pop().into_int_value();
                         let sum = builder.build_int_sub(lhs, rhs, "isub");
                         push(inkwell::values::BasicValueEnum::IntValue(sum));
                     }
@@ -274,11 +270,11 @@ fn main() {
                     }
                     _ => panic!("0x{:?} is not implemented yet!", opcode),
                 }
-                // Normal code
+                // Normal code (???)
             }
         }
         if function.verify(true) {
-            // fpm.run_on(&function);
+            fpm.run_on(&function);
         }
     }
     class_module.print_to_stderr();
@@ -313,19 +309,6 @@ fn main() {
             )
             .unwrap();
             class_module.print_to_file("module.ll").unwrap();
-
-            // let engine = class_module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
-            // unsafe {
-            //     // engine.run_function(
-            //     //     class_module.get_function("add").unwrap(),
-            //     //     &[&ctx.i32_type().create_generic_value(2, false),&ctx.i32_type().create_generic_value(2, false)],
-            //     // );
-            //     let fp = engine.get_function::<unsafe extern "C" fn(i32,i32) -> i32>("add").unwrap();
-            //     fp.call(2,4);
-            //     // let f = std::mem::transmute::<usize, extern "C" fn(i32, i32) -> i32>(fp);
-            //     // let z =  f(2,2);
-            //     // println!("Output of F(2,2) -> {}",z);
-            // };
         }
 
         Err(e) => {
@@ -334,34 +317,3 @@ fn main() {
         }
     }
 }
-
-// fn until_terminator<'a>(start: usize, b: &'a ByteCode) -> ControlTree<'a> {
-//     println!("Testing bytecode {:#?}", b);
-//     let mut i = b.opcodes.iter();
-//     let mut contains_branch = false;
-//     for _ in 0..start {
-//         i.next().unwrap();
-//     }
-//     let until_ret = i
-//         .take_while(|(_offset, o)| if let Opcode::Ireturn = o { false } else { true })
-//         .collect::<Vec<_>>();
-//     for (offset, o) in &until_ret {
-//         if let Opcode::IfIcmpne(false_offset) = o {
-//             contains_branch = true;
-//             let false_absolute = offset + (false_offset as usize );
-//         }
-//     }
-//     match contains_branch {
-//         true => ControlTree::SomeComparison
-//     }
-//     // ControlTree::Normal(until_ret)
-// }
-// #[derive(Debug)]
-// enum ControlTree<'a> {
-//     Normal(Vec<&'a (usize, Opcode<'a>)>),
-//     SomeComparison {
-//         next: Box<ControlTree<'a>>,
-//         jmp: Box<ControlTree<'a>>,
-//     },
-//     Null,
-// }

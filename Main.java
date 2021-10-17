@@ -29,11 +29,19 @@ public class Main {
     }
 
     public int fib(int n) {
+        // println(n);
+        // println(2);
+
         if (n < 2) {
-            println(n);
+            // println(n);
             return n;
         }
+        // return fib(n-1);
         return fib(n - 1) + fib(n - 2);
+        // return minusOne(n);
+    }
+    public int minusOne(int n) {
+        return n-1;
     }
     // public int fib(int n) {
     // if(n < 5) {
