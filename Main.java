@@ -5,6 +5,7 @@ public class Main {
     native int println(int data);
 
     public int add(int left, int right) {
+        int x = left + right;
         if (left == right) {
             if (left == 1) {
                 return 6900;
@@ -16,7 +17,8 @@ public class Main {
         }
     }
     public float addf(float left, float right) {
-        return left + right;
+       float sum = left + right;
+        return left + right + sum;
     }
     public int testMethods(int i, int j) {
         return testMethods2(i, j);

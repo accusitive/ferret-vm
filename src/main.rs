@@ -13,12 +13,12 @@ use inkwell::{
 mod util;
 
 fn main() {
-    let _exit = std::process::Command::new("/usr/bin/javac")
-        .arg("Main.java")
-        .spawn()
-        .unwrap()
-        .wait()
-        .unwrap();
+    // let _exit = std::process::Command::new("/usr/bin/javac")
+    //     .arg("Main.java")
+    //     .spawn()
+    //     .unwrap()
+    //     .wait()
+    //     .unwrap();
 
     let ctx = Context::create();
     let builder = ctx.create_builder();
@@ -71,10 +71,40 @@ fn main() {
             .ptr_type(inkwell::AddressSpace::Generic)
     };
 
-    let _varstore_ty = {
+    let varstore_ty = {
         let arr = int.array_type(1024);
         ctx.struct_type(&[arr.into()], false)
+            .ptr_type(inkwell::AddressSpace::Generic)
     };
+    let varstore_new = class_module.add_function(
+        "varstore_new",
+        varstore_ty.fn_type(&[], false),
+        Some(Linkage::External),
+    );
+
+    let varstore_set = class_module.add_function(
+        "varstore_set",
+        void.fn_type(
+            &[
+                inkwell::types::BasicTypeEnum::PointerType(varstore_ty),
+                int.into(),
+                int.into(),
+            ],
+            false,
+        ),
+        Some(Linkage::External),
+    );
+    let varstore_get = class_module.add_function(
+        "varstore_get",
+        int.fn_type(
+            &[
+                inkwell::types::BasicTypeEnum::PointerType(varstore_ty),
+                int.into(),
+            ],
+            false,
+        ),
+        Some(Linkage::External),
+    );
     let std_stack_new = class_module.add_function(
         "stack_new",
         stack_ty.fn_type(&[], false),
@@ -118,7 +148,9 @@ fn main() {
                 false
             }
         });
+        // Native functions dont have a code attribute
         if code.is_none() {
+            println!("Note: Method {} doesnt have a code attribute", method.name);
             continue;
         }
         let code = code.unwrap();
@@ -131,6 +163,13 @@ fn main() {
             let stack = BasicValueEnum::PointerValue(
                 builder
                     .build_call(std_stack_new, &[], "stack")
+                    .try_as_basic_value()
+                    .unwrap_left()
+                    .into_pointer_value(),
+            );
+            let varstore = BasicValueEnum::PointerValue(
+                builder
+                    .build_call(varstore_new, &[], "varstore")
                     .try_as_basic_value()
                     .unwrap_left()
                     .into_pointer_value(),
@@ -155,13 +194,8 @@ fn main() {
 
             let i = c.bytecode.as_ref().unwrap().opcodes.iter().peekable();
             let mut should_branch_previous_to_current = true;
-            let locals = (0..=3)
-                .map(|i| {
-                    builder.build_alloca(
-                        int,
-                        &format!("local{}", i),
-                    )
-                })
+            let locals = (0..c.max_locals)
+                .map(|i| builder.build_alloca(int, &format!("local{}", i)))
                 .collect::<Vec<_>>();
             for p in 1..function.count_params() + 1 {
                 let ptr = locals.get(p as usize).unwrap();
@@ -217,6 +251,17 @@ fn main() {
                     Opcode::Aload(n) => {
                         let l = builder.build_load(*locals.get(*n as usize).unwrap(), "aload");
                         pushi(l);
+                    }
+                    Opcode::Fstore(n) => {
+                        let fvalue = popf();
+                        let value = builder.build_bitcast(fvalue, int, "bitcast_to_int");
+                        let local = locals.get(*n as usize).unwrap();
+                        builder.build_store(*local, value);
+                    }
+                    Opcode::Istore(n) => {
+                        let value = popi();
+                        let local = locals.get(*n as usize).unwrap();
+                        builder.build_store(*local, value);
                     }
                     Opcode::Invokespecial(_) => {}
                     Opcode::Return => {
