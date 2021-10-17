@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::Path};
 
-use cafebabe::{attributes::AttributeData, bytecode::Opcode};
+use cafebabe::{ClassFile, attributes::AttributeData, bytecode::Opcode};
 use inkwell::{
     basic_block::BasicBlock,
     context::Context,
@@ -11,7 +11,13 @@ use inkwell::{
     IntPredicate, OptimizationLevel,
 };
 mod util;
-
+// struct Compiler<'a> {
+//     classes: Vec<ClassFile<'a>>
+// }
+// fn get_class<'a>(class_name: &str) -> ClassFile<'a>{
+//     let bytes = std::fs::read("./Main.class").unwrap();
+//     cafebabe::parse_class(&bytes).unwrap()
+// }
 fn main() {
     // let _exit = std::process::Command::new("/usr/bin/javac")
     //     .arg("Main.java")
